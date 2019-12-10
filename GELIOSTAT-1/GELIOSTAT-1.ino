@@ -1,10 +1,11 @@
-#define LED 2
-#define BUZZER 3
-#define SD_CS 23
-#define IRpin 5
-#define steps 30
-#define temp_bus 4
-#define use_debug 1
+#define temp_bus  4
+#define IRpin     5
+#define LED       6
+#define BUZZER    7
+#define v_pin     A8
+#define SD_CS     23
+#define use_debug 0
+#define HeaderControl 8
 
 #include <SPI.h>
 #include <SD.h>
@@ -24,19 +25,26 @@ SKMS5611 bmp(&Wire);
 OneWire oneWire(temp_bus);
 DallasTemperature sensors(&oneWire);
 
+void makelog(String message);
+String check_file(String filename);
+void tone(int32_t duration);
+
 uint8_t mode;
-float external_temp;
-float internal_temp;
+volatile float external_temp;
+volatile float internal_temp;
 float latitude;
 float longitude;
 float gps_alt;
-float bar_alt;
-float bar;
+volatile float bar_alt;
+volatile float bar;
 float init_bar;
-float accX, accY, accZ;
-bool gps_fix;
+volatile float accX, accY, accZ;
+volatile float voltage;
+volatile int charge;
+volatile bool gps_fix;
 const int toneFreq = 4000;
-uint8_t iterator = steps;
+int rc;
+unsigned long t;
 
 void setup() {
   external_temp = 0.;
@@ -49,42 +57,44 @@ void setup() {
   accX = 0.;
   accY = 0.;
   accZ = 0.;
-  mode = 1;
+  voltage = 0.;
+  charge = 0;
+  mode = 0;
 
-  digitalWrite(LED, HIGH);
   pinMode(BUZZER, OUTPUT);
   pinMode(LED, OUTPUT);
   pinMode(IRpin, OUTPUT);
+  pinMode(HeaderControl, OUTPUT);
   
   //Temp
   sensors.begin(); 
-  sensors.setResolution(10);
+  //sensors.setResolution(10);
   
   if(use_debug) Serial.begin(115200);
-  else Serial1.begin(115200);
+  else Serial1.begin(9600);
   
   //SD card init
   if (SD.begin(SD_CS)){
-    log("SD card initialized.");
+    makelog("SD card initialized.");
   } else {
-    log("SD card initialization error, check wiring.");
+    makelog("SD card initialization error, check wiring.");
     while (1) {}
   }
   String filename = "flight";
   filename = check_file(filename);
   telemetry_file = SD.open(filename + ".csv", FILE_WRITE);
   if (telemetry_file) {
-    log("Writing header to file...");
-    telemetry_file.println("Internal temp.,External temp.,GPS Alt,Bar. Alt,Air Pressure,Latitude,Longitude,AX,AY,AZ");
+    makelog("Writing header to file...");
+    telemetry_file.println("CHRG,Temp.1,Temp.2,GPS Alt,Bar. Alt,Air Pressure,Latitude,Longitude,AX,AY,AZ");
     telemetry_file.flush();
-    log("Done");
+    makelog("Done");
   } else {
-    log("Error opening logfile");
+    makelog("Error opening logfile");
   }
     
   //GPS init
   Serial2.begin(9600);
-  log("GPS initialized.");
+  makelog("GPS initialized.");
      
   //IMU init
   Wire.begin();
@@ -100,55 +110,67 @@ void setup() {
   bmp.Readout();
   init_bar = bmp.GetPres();
   
-  log("IMU initialized.\nExecuting...\n");
+  makelog("IMU initialized.\nExecuting...\n");
 
   tone(50);
-  digitalWrite(LED, LOW);
+  digitalWrite(LED, HIGH);
   
   delay(2000);
-  Serial.println("CHEEZE :D");
+  
+  //Turn off led to ensure that this function is executing
+  digitalWrite(LED, LOW);
 }
 
 void loop() {
-  if(iterator == 0) {
-    iterator = steps;
-    takePhoto();
-    Serial.println("CHEEZE :D");
+  //Radio control
+  while (Serial1.available()) {
+      Serial.println(Serial1.read());
   }
+  if(rc == 2){
+    mode == 2;
+  }
+  else if (rc == 1){ 
+    mode = 1;
+  }
+
+  //Menu loop
   switch(mode) {
-  case 0:
-    //System testing
-    init_test();
-    break;
-  case 1:
-    //Normal mode
-    telemetry();
-    break;
-  case 2:
-    //Power safe mode 
-    ps();
-    break;
-  default:
-    telemetry();
-    break;
+    case 0:
+      //System testing
+      init_test();
+      break;
+    case 1:
+      //Normal mode
+      telemetry();
+      break;
+    case 2:
+      //Power safe mode 
+      ps();
+      break;
+    default:
+      telemetry();
+      break;
   }
-  iterator--;
+
+  //Photo
+  if ( (millis()-t) > 1500) {
+     takePhoto();
+     t = millis();
+  }
+
+  //Therma-control
+  TermaControl(internal_temp);
+
+  //Voltage
+  voltage = analogRead(v_pin)/204.6;
+  charge = map(voltage, 3.57, 5, 0, 100);
 }
 
 void init_test()
 {
   //Initialization test
-}
-
-void ps()
-{
-  //Power safe mode and beaconing
-}
-
-void telemetry(){
-  //Turn off led to ensure that this function is executing
-  digitalWrite(LED, HIGH);
-  //Telemetry
+  delay(100);
+  //Test
   //GPS
   while(Serial2.available()){ // check for gps data 
     if(gps.encode(Serial2.read()))// encode gps data 
@@ -156,7 +178,7 @@ void telemetry(){
       unsigned long fix_age;
       gps.f_get_position(&latitude, &longitude, &fix_age); 
       if (fix_age == TinyGPS::GPS_INVALID_AGE || fix_age > 5000){
-        log("No fix detected");
+        makelog("No fix detected");
         latitude = 0.;
         longitude = 0.;
         gps_fix = false;
@@ -175,7 +197,6 @@ void telemetry(){
   bmp.ReadProm();
   bmp.Readout();
   bar = bmp.GetPres();
-  bar_alt = getAlt(bar,init_bar,bmp.GetTemp()/100);
   //Accelerometer
   int16_t X,Y,Z;
   mpu.getAcceleration(&X, &Y, &Z);
@@ -183,10 +204,62 @@ void telemetry(){
   accY = Y/16384.;
   accZ = Z/16384.;
   
-  if(use_debug) printinserial(Serial);
-  else printinserial(Serial1);
+  printinserial(Serial1);
+  delay(500);
+}
+
+void ps()
+{
+  //Power safe mode and beaconing
+  digitalWrite(LED, HIGH);
+  tone(200);
+  delay(100);
+  digitalWrite(LED, LOW);
+}
+
+void telemetry(){
+  //Telemetry
+  
+  //GPS
+  while(Serial2.available()){ // check for gps data 
+    if(gps.encode(Serial2.read()))// encode gps data 
+    {
+      unsigned long fix_age;
+      gps.f_get_position(&latitude, &longitude, &fix_age); 
+      if (fix_age == TinyGPS::GPS_INVALID_AGE || fix_age > 5000){
+        makelog("No fix detected");
+        latitude = 0.;
+        longitude = 0.;
+        gps_fix = false;
+      } else {
+        gps_alt = gps.f_altitude();
+        if (gps_alt > 50000) gps_alt = 0.;
+        gps_fix = true;
+      }
+    }
+  }
+  
+  //Temperature
+  sensors.requestTemperatures();
+  external_temp = sensors.getTempCByIndex(1);
+  internal_temp = sensors.getTempCByIndex(0);
+  
+  //Barometer
+  bmp.ReadProm();
+  bmp.Readout();
+  bar = bmp.GetPres();
+  bar_alt = getAlt(bar,init_bar,bmp.GetTemp()/100.);
+  
+  //Accelerometer
+  int16_t X,Y,Z;
+  mpu.getAcceleration(&X, &Y, &Z);
+  accX = X/16384.;
+  accY = Y/16384.;
+  accZ = Z/16384.;
   
   //Writing to file
+  telemetry_file.print(charge);
+  telemetry_file.print(',');
   telemetry_file.print(internal_temp);
   telemetry_file.print(',');
   telemetry_file.print(external_temp);
@@ -207,8 +280,6 @@ void telemetry(){
   telemetry_file.print(",");
   telemetry_file.println(accZ);
   telemetry_file.flush();
-
-  delay(500);
 }
 
 double getAlt(float pressure, float init_p, float temp)
@@ -216,35 +287,52 @@ double getAlt(float pressure, float init_p, float temp)
   return 8.3145*(temp+273.151)/(0.029*9.807)*log(init_p/pressure);
 }
 
+void SendPulse(int pulseWidth)
+{ 
+  int reps = pulseWidth/23.6;
+ 
+  for(int i=0;i<=reps;i++)
+  {
+    digitalWrite(IRpin,HIGH);
+    delayMicroseconds(11);
+    digitalWrite(IRpin,LOW);
+    delayMicroseconds(5);
+  }
+ 
+}
+
 void takePhoto(void) {
-  int i;
-  for (i = 0; i < 76; i++) {
-    digitalWrite(IRpin, HIGH);
-    delayMicroseconds(7);
-    digitalWrite(IRpin, LOW);
-    delayMicroseconds(7);
+  for(int i=0;i<2;i++)
+  {
+    //pulse for 2.0 millis
+    SendPulse(2000);
+    //delay for 27.8 millis
+    //using a combination of delay() and delayMicroseconds()
+    delay(27);
+    delayMicroseconds(800);
+    //on pulse for 0.5 millis
+    SendPulse(500);
+    //delay for 1.5 millis
+    delayMicroseconds(1500);
+    //on pulse for 0.5 millis
+    SendPulse(500);
+    //delay for 3.5 millis
+    delayMicroseconds(3500);
+    //send pulse for 0.5 millis
+    SendPulse(500);
+    if(i<1)
+    {
+      delay(63);
+    }
   }
-  delay(27);
-  delayMicroseconds(810);
-  for (i = 0; i < 16; i++) {
-    digitalWrite(IRpin, HIGH);
-    delayMicroseconds(7);
-    digitalWrite(IRpin, LOW);
-    delayMicroseconds(7);
-  }
-  delayMicroseconds(1540);
-  for (i = 0; i < 16; i++) {
-    digitalWrite(IRpin, HIGH);
-    delayMicroseconds(7);
-    digitalWrite(IRpin, LOW);
-    delayMicroseconds(7);
-  }
-  delayMicroseconds(3545);
-  for (i = 0; i < 16; i++) {
-    digitalWrite(IRpin, HIGH);
-    delayMicroseconds(7);
-    digitalWrite(IRpin, LOW);
-    delayMicroseconds(7);
+}
+
+void TermaControl(float temp){                  
+  if (temp>20){    
+    digitalWrite(HeaderControl, LOW);               
+  }                 
+  if (temp<=20){
+    digitalWrite(HeaderControl, HIGH);             
   }
 }
 
@@ -267,7 +355,7 @@ String check_file(String filename)
   return filename;
 }
 
-void log(String message)
+void makelog(String message)
 {
   if(use_debug) Serial.println(message);
   else Serial1.println(message);
@@ -275,6 +363,9 @@ void log(String message)
 
 void printinserial(UARTClass &s)
 {
+  s.print("Bat.");
+  s.print(charge);
+  s.print('\t');
   s.print("Int.t: ");
   s.print(internal_temp);
   s.print('\t');
