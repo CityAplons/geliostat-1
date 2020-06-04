@@ -4,7 +4,6 @@
 #define BUZZER    7
 #define v_pin     A8
 #define SD_CS     23
-#define use_debug 0
 #define HeaderControl 8
 
 #include <SPI.h>
@@ -30,23 +29,24 @@ String check_file(String filename);
 void tone(int32_t duration);
 
 uint8_t mode;
-volatile float external_temp;
-volatile float internal_temp;
+float external_temp;
+float internal_temp;
 float latitude;
 float longitude;
 float gps_alt;
-volatile float bar_alt;
-volatile float bar;
+float bar_alt;
+float bar;
 float init_bar;
-volatile float accX, accY, accZ;
-volatile float voltage;
-volatile int charge;
-volatile bool gps_fix;
+float accX, accY, accZ;
+int voltage;
+float charge;
+bool gps_fix;
 const int toneFreq = 4000;
 int rc;
 unsigned long t;
 
 void setup() {
+  delay(1500);
   external_temp = 0.;
   internal_temp = 0.;
   latitude = 0.;
@@ -57,9 +57,9 @@ void setup() {
   accX = 0.;
   accY = 0.;
   accZ = 0.;
-  voltage = 0.;
+  voltage = 0;
   charge = 0;
-  mode = 0;
+  mode = 1;
 
   pinMode(BUZZER, OUTPUT);
   pinMode(LED, OUTPUT);
@@ -68,10 +68,10 @@ void setup() {
   
   //Temp
   sensors.begin(); 
-  //sensors.setResolution(10);
+  sensors.setResolution(12);
   
-  if(use_debug) Serial.begin(115200);
-  else Serial1.begin(9600);
+  //Serial.begin(115200);
+  Serial3.begin(9600);
   
   //SD card init
   if (SD.begin(SD_CS)){
@@ -85,7 +85,7 @@ void setup() {
   telemetry_file = SD.open(filename + ".csv", FILE_WRITE);
   if (telemetry_file) {
     makelog("Writing header to file...");
-    telemetry_file.println("CHRG,Temp.1,Temp.2,GPS Alt,Bar. Alt,Air Pressure,Latitude,Longitude,AX,AY,AZ");
+    telemetry_file.println("Time,Voltage,CHRG,Temp.1,Temp.2,GPS Alt,Bar. Alt,Air Pressure,Latitude,Longitude,AX,AY,AZ");
     telemetry_file.flush();
     makelog("Done");
   } else {
@@ -101,11 +101,10 @@ void setup() {
   mpu.initialize();
   bmp.connect();
   if(!mpu.testConnection()){
-    if(use_debug) Serial.println("IMU initialization error, check wiring.");
-    else Serial1.println("IMU initialization error, check wiring."); 
+    //Serial.println("IMU initialization error, check wiring.");
+    Serial3.println("IMU initialization error, check wiring."); 
     while (1) {}
   }
-
   bmp.ReadProm();
   bmp.Readout();
   init_bar = bmp.GetPres();
@@ -115,7 +114,7 @@ void setup() {
   tone(50);
   digitalWrite(LED, HIGH);
   
-  delay(2000);
+  delay(1000);
   
   //Turn off led to ensure that this function is executing
   digitalWrite(LED, LOW);
@@ -123,13 +122,16 @@ void setup() {
 
 void loop() {
   //Radio control
-  while (Serial1.available()) {
-      Serial.println(Serial1.read());
+  while (Serial3.available()) {
+      rc = Serial3.read();
   }
-  if(rc == 2){
-    mode == 2;
+  if(rc == 252){
+    mode = 2;
   }
-  else if (rc == 1){ 
+  else if (rc == 251){ 
+    mode = 0;
+  }
+  else if (rc == 253){ 
     mode = 1;
   }
 
@@ -160,10 +162,7 @@ void loop() {
 
   //Therma-control
   TermaControl(internal_temp);
-
-  //Voltage
-  voltage = analogRead(v_pin)/204.6;
-  charge = map(voltage, 3.57, 5, 0, 100);
+  delay(500);
 }
 
 void init_test()
@@ -204,8 +203,7 @@ void init_test()
   accY = Y/16384.;
   accZ = Z/16384.;
   
-  printinserial(Serial1);
-  delay(500);
+  printinserial(Serial3);
 }
 
 void ps()
@@ -213,12 +211,16 @@ void ps()
   //Power safe mode and beaconing
   digitalWrite(LED, HIGH);
   tone(200);
-  delay(100);
+  delay(500);
   digitalWrite(LED, LOW);
 }
 
 void telemetry(){
   //Telemetry
+
+  //Voltage
+  voltage = analogRead(v_pin)/310.3030*1000;
+  charge = map(voltage, 2446, 3300, 0, 100);
   
   //GPS
   while(Serial2.available()){ // check for gps data 
@@ -256,8 +258,15 @@ void telemetry(){
   accX = X/16384.;
   accY = Y/16384.;
   accZ = Z/16384.;
+
+  //printinserial(Serial);
+  //printinserial(Serial3);
   
   //Writing to file
+  telemetry_file.print(millis()/1000);
+  telemetry_file.print(',');
+  telemetry_file.print(voltage/0.688);
+  telemetry_file.print(',');
   telemetry_file.print(charge);
   telemetry_file.print(',');
   telemetry_file.print(internal_temp);
@@ -357,38 +366,29 @@ String check_file(String filename)
 
 void makelog(String message)
 {
-  if(use_debug) Serial.println(message);
-  else Serial1.println(message);
+  Serial.println(message);
+  Serial3.println(message);
 }
 
 void printinserial(UARTClass &s)
 {
-  s.print("Bat.");
-  s.print(charge);
-  s.print('\t');
-  s.print("Int.t: ");
+  s.print('<');
   s.print(internal_temp);
   s.print('\t');
-  s.print("Ext.t: ");
   s.print(external_temp);
   s.print('\t');
-  s.print("Alt: ");
   s.print(gps_alt);
   s.print('\t');
-  s.print("P: ");
-  s.print(bar);
+  s.print(String(charge,2));
   s.print('\t');
-  s.print("Lat: ");
   s.print(String(latitude,6));
   s.print('\t');
-  s.print("Long: ");
   s.print(String(longitude,6));
   s.print('\t');
-  s.print("Acc. XYZ: ");
   s.print(accX);
-  s.print(", ");
+  s.print('\t');
   s.print(accY);
-  s.print(", ");
+  s.print('\t');
   s.print(accZ);
   s.print('\n');
   return;
