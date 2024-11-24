@@ -10,4 +10,4 @@
 | -------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | [<img src="./image/prototype.jpg" height="500" />](./image/prototype.jpg) | [<img src="./image/module.jpg" height="500" />](./image/module.jpg) |
 
-See 'data/' directory for more information about the project.
+See 'reports/' directory for more information about the project.
